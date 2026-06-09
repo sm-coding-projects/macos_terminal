@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Least-privilege entitlement set. See SECURITY.md and DECISIONS.md. -->
+
+    <!-- App Sandbox on. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Outbound SSH connections only; the app never listens. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Read private keys the user explicitly picks in the open panel. -->
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+
+    <!-- Deliberately ABSENT:
+         com.apple.security.network.server        (no inbound connections)
+         com.apple.security.files.downloads.*     (no blanket file access)
+         com.apple.security.cs.allow-jit          (not needed)
+         com.apple.security.cs.disable-library-validation (not needed)
+         camera/microphone/location/contacts      (never used) -->
+</dict>
+</plist>
