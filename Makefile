@@ -12,7 +12,7 @@ TEST_FLAGS  := -Xswiftc -F -Xswiftc $(TESTING_FWK) \
                -Xlinker -rpath -Xlinker $(TESTING_FWK) \
                -Xlinker -rpath -Xlinker $(TESTING_LIB)
 
-.PHONY: build release test run app clean
+.PHONY: build release test run app dmg clean
 
 build:
 	swift build
@@ -35,6 +35,11 @@ run: build
 app: release
 	./Scripts/make-app.sh
 
+# Universal (arm64 + x86_64) tester DMG, ad-hoc signed by default.
+# Set SIGN_IDENTITY="Developer ID Application: ..." for a real signature.
+dmg:
+	./Scripts/make-dmg.sh
+
 clean:
 	swift package clean
-	rm -rf "build/SecureSSH Terminal.app"
+	rm -rf build
