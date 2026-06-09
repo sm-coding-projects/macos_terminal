@@ -47,7 +47,14 @@ make run        # build and launch the app
 make test       # run the unit test suite (56 tests)
 make release    # optimized build
 make app        # wrap the release binary into build/SecureSSH Terminal.app
+make dmg        # universal (arm64+x86_64) tester DMG, ad-hoc signed
 ```
+
+`make dmg` produces `build/SecureSSH-Terminal-<version>.dmg` with a
+drag-to-Applications layout and first-launch instructions. It is ad-hoc
+signed by default (testers right-click → Open once, since it isn't
+notarized); set `SIGN_IDENTITY="Developer ID Application: …"` to sign with
+a real certificate instead.
 
 `make test` passes explicit framework search paths so the Swift Testing
 framework resolves when only the Command Line Tools are installed; with
