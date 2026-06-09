@@ -42,6 +42,7 @@ rm -rf "$STAGING" "$DMG"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp build/SecureSSHTerminal-universal "$APP_DIR/Contents/MacOS/SecureSSHTerminal"
 cp Resources/Info.plist "$APP_DIR/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 echo "==> Signing (identity: $SIGN_IDENTITY)"
 if [ "$SIGN_IDENTITY" = "-" ]; then
