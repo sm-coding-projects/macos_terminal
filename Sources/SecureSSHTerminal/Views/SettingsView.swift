@@ -9,11 +9,11 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Terminal") {
-                Slider(value: $fontSize, in: 10...20, step: 1) {
+                Slider(value: $fontSize, in: 9...28, step: 1) {
                     Text("Font Size: \(Int(fontSize)) pt")
                 }
                 .accessibilityLabel("Terminal font size")
-                Text("Applies to newly opened sessions.")
+                Text("Applies immediately to open sessions. You can also use ⌘+ and ⌘− in the terminal, and ⌘0 to reset.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

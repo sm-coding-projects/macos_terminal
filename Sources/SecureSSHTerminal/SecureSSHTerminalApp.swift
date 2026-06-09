@@ -45,6 +45,13 @@ struct SecureSSHTerminalApp: App {
                     .disabled(model.activeSessionForSelection == nil)
                 Button("Send EOF (Ctrl+D)") { model.activeSessionForSelection?.sendEOF() }
                     .disabled(model.activeSessionForSelection == nil)
+                Divider()
+                Button("Increase Font Size") { TerminalFontSize.adjust(by: 1) }
+                    .keyboardShortcut("+", modifiers: .command)
+                Button("Decrease Font Size") { TerminalFontSize.adjust(by: -1) }
+                    .keyboardShortcut("-", modifiers: .command)
+                Button("Reset Font Size") { TerminalFontSize.reset() }
+                    .keyboardShortcut("0", modifiers: .command)
             }
         }
 

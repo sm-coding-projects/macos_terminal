@@ -3,6 +3,34 @@ import AppKit
 import SwiftTerm
 import SecureSSHCore
 
+/// Single source of truth for the terminal font size, shared by the
+/// menu commands, the ⌘+/⌘- key handling in the terminal view, and the
+/// Settings slider (all read/write the same UserDefaults key).
+enum TerminalFontSize {
+    static let key = "terminalFontSize"
+    static let defaultSize: Double = 13
+    static let range: ClosedRange<Double> = 9...28
+
+    static var current: Double {
+        let stored = UserDefaults.standard.double(forKey: key)
+        return stored == 0 ? defaultSize : stored.clamped(to: range)
+    }
+
+    static func adjust(by delta: Double) {
+        UserDefaults.standard.set((current + delta).clamped(to: range), forKey: key)
+    }
+
+    static func reset() {
+        UserDefaults.standard.set(defaultSize, forKey: key)
+    }
+}
+
+private extension Double {
+    func clamped(to range: ClosedRange<Double>) -> Double {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
+}
+
 /// SwiftUI wrapper around SwiftTerm's `TerminalView`, wired to a
 /// `TerminalViewModel`: keystrokes go to the SSH channel, SSH output is fed
 /// to the emulator, and size changes propagate as SSH window-change requests.
@@ -32,6 +60,12 @@ struct TerminalHostView: NSViewRepresentable {
 
     func updateNSView(_ view: PasteGuardTerminalView, context: Context) {
         view.warnOnMultiLinePaste = pasteWarning
+        // Apply font-size changes (⌘+/⌘-, menu, or Settings) to the live
+        // terminal; SwiftTerm re-lays-out and reports the new cols/rows.
+        let size = CGFloat(TerminalFontSize.current)
+        if abs(view.font.pointSize - size) > 0.1 {
+            view.font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
         context.coordinator.clearIfSignaled(model.clearTerminalSignal, view: view)
         if session.state == .connected, view.window?.firstResponder !== view {
             view.window?.makeFirstResponder(view)
@@ -99,6 +133,29 @@ struct TerminalHostView: NSViewRepresentable {
 /// a pasted newline executes commands immediately on the remote host.
 final class PasteGuardTerminalView: TerminalView {
     var warnOnMultiLinePaste = true
+
+    /// Handle ⌘+ / ⌘= / ⌘- / ⌘0 directly: the terminal is first responder
+    /// while the user types, and this also makes ⌘= (the unshifted "+" key)
+    /// work, which menu key-equivalents alone would not.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers.contains(.command), !modifiers.contains(.option), !modifiers.contains(.control) {
+            switch event.charactersIgnoringModifiers {
+            case "+", "=":
+                TerminalFontSize.adjust(by: 1)
+                return true
+            case "-":
+                TerminalFontSize.adjust(by: -1)
+                return true
+            case "0":
+                TerminalFontSize.reset()
+                return true
+            default:
+                break
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 
     override func paste(_ sender: Any) {
         guard warnOnMultiLinePaste,
