@@ -46,8 +46,11 @@ struct SecureSSHTerminalApp: App {
                 Button("Send EOF (Ctrl+D)") { model.activeSessionForSelection?.sendEOF() }
                     .disabled(model.activeSessionForSelection == nil)
                 Divider()
+                // "=" is the unshifted "+" key: SwiftUI's exact-modifier
+                // matching means a literal "+" equivalent can never fire
+                // (⌘= sends "=", ⌘⇧= adds a shift modifier). Shown as ⌘=.
                 Button("Increase Font Size") { TerminalFontSize.adjust(by: 1) }
-                    .keyboardShortcut("+", modifiers: .command)
+                    .keyboardShortcut("=", modifiers: .command)
                 Button("Decrease Font Size") { TerminalFontSize.adjust(by: -1) }
                     .keyboardShortcut("-", modifiers: .command)
                 Button("Reset Font Size") { TerminalFontSize.reset() }
