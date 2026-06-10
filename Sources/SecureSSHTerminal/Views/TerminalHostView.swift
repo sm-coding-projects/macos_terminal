@@ -37,7 +37,6 @@ private extension Double {
 struct TerminalHostView: NSViewRepresentable {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var session: TerminalViewModel
-    @AppStorage("terminalFontSize") private var fontSize: Double = 13
     @AppStorage("multiLinePasteWarning") private var pasteWarning = true
 
     func makeCoordinator() -> Coordinator {
@@ -45,7 +44,7 @@ struct TerminalHostView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> PasteGuardTerminalView {
-        let font = NSFont.monospacedSystemFont(ofSize: CGFloat(fontSize), weight: .regular)
+        let font = NSFont.monospacedSystemFont(ofSize: CGFloat(TerminalFontSize.current), weight: .regular)
         let view = PasteGuardTerminalView(frame: .zero, font: font)
         view.terminalDelegate = context.coordinator
         view.warnOnMultiLinePaste = pasteWarning
@@ -60,12 +59,6 @@ struct TerminalHostView: NSViewRepresentable {
 
     func updateNSView(_ view: PasteGuardTerminalView, context: Context) {
         view.warnOnMultiLinePaste = pasteWarning
-        // Apply font-size changes (⌘+/⌘-, menu, or Settings) to the live
-        // terminal; SwiftTerm re-lays-out and reports the new cols/rows.
-        let size = CGFloat(TerminalFontSize.current)
-        if abs(view.font.pointSize - size) > 0.1 {
-            view.font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        }
         context.coordinator.clearIfSignaled(model.clearTerminalSignal, view: view)
         if session.state == .connected, view.window?.firstResponder !== view {
             view.window?.makeFirstResponder(view)
@@ -133,6 +126,38 @@ struct TerminalHostView: NSViewRepresentable {
 /// a pasted newline executes commands immediately on the remote host.
 final class PasteGuardTerminalView: TerminalView {
     var warnOnMultiLinePaste = true
+    private var defaultsObserver: NSObjectProtocol?
+
+    /// Observe the font-size preference directly so changes from any source
+    /// (menu, ⌘+/⌘-, Settings slider) apply to live terminals immediately.
+    /// SwiftUI's updateNSView is not a reliable channel here: it only runs
+    /// when a dependency it tracked during the last update changes.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard defaultsObserver == nil, window != nil else { return }
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: UserDefaults.standard,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyPreferredFontSize()
+        }
+        applyPreferredFontSize()
+    }
+
+    deinit {
+        if let defaultsObserver {
+            NotificationCenter.default.removeObserver(defaultsObserver)
+        }
+    }
+
+    private func applyPreferredFontSize() {
+        let size = CGFloat(TerminalFontSize.current)
+        guard abs(font.pointSize - size) > 0.1 else { return }
+        // Setting `font` makes SwiftTerm re-layout the grid and report the
+        // new cols/rows, which propagates to SSH as a window-change.
+        font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    }
 
     /// Handle ⌘+ / ⌘= / ⌘- / ⌘0 directly: the terminal is first responder
     /// while the user types, and this also makes ⌘= (the unshifted "+" key)
