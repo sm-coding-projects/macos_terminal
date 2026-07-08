@@ -14,9 +14,34 @@ struct SessionView: View {
                 TerminalHostView(session: session)
                     .accessibilityLabel("Terminal for \(session.profile.displayName)")
                 overlay
+                copyToast
             }
         }
         .background(Color.black)
+    }
+
+    /// Transient confirmation shown after copy-on-select.
+    @ViewBuilder
+    private var copyToast: some View {
+        VStack {
+            if let notice = model.copyNotice {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.on.clipboard")
+                    Text("Copied \(notice.characterCount) character\(notice.characterCount == 1 ? "" : "s")")
+                }
+                .font(.callout.weight(.medium))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.regularMaterial, in: Capsule())
+                .padding(.top, 10)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .id(notice.id)
+                .accessibilityLabel("Copied \(notice.characterCount) characters to the clipboard")
+            }
+            Spacer()
+        }
+        .animation(.easeOut(duration: 0.2), value: model.copyNotice)
+        .allowsHitTesting(false)
     }
 
     private var statusBar: some View {

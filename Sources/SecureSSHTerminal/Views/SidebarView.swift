@@ -22,6 +22,14 @@ struct SidebarView: View {
                         .tag(profile.id)
                         .contentShape(Rectangle())
                         .simultaneousGesture(
+                            // Explicit single-click selection: without this the
+                            // List's own selection waits on the double-click
+                            // recognizer below, so switching needed two clicks.
+                            TapGesture().onEnded {
+                                model.selectedProfileID = profile.id
+                            }
+                        )
+                        .simultaneousGesture(
                             TapGesture(count: 2).onEnded {
                                 model.connect(profileID: profile.id)
                             }
@@ -74,6 +82,7 @@ struct SidebarView: View {
 struct ProfileRow: View {
     let profile: ConnectionProfile
     @ObservedObject private var sessionBox: SessionBox
+    @State private var isHovered = false
 
     init(profile: ConnectionProfile, session: TerminalViewModel?) {
         self.profile = profile
@@ -95,9 +104,15 @@ struct ProfileRow: View {
             Spacer()
         }
         .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(Color.primary.opacity(isHovered ? 0.08 : 0))
+        )
+        .onHover { isHovered = $0 }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(profile.displayName), \(profile.username) at \(profile.host), \(statusDescription)")
-        .accessibilityHint("Double-click or press Return to connect")
+        .accessibilityHint("Click to select, double-click or press Return to connect")
     }
 
     private var state: TerminalViewModel.State? { sessionBox.session?.state }
