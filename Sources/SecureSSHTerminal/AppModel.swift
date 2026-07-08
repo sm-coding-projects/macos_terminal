@@ -26,6 +26,12 @@ struct AppAlertMessage: Identifiable {
     let message: String
 }
 
+/// Transient confirmation shown after copy-on-select in the terminal.
+struct CopyNotice: Identifiable, Equatable {
+    let id = UUID()
+    let characterCount: Int
+}
+
 /// Root application state: profile list, live sessions, and the
 /// continuation-based bridges that let async core flows present SwiftUI
 /// sheets (password prompts, host-key trust dialogs).
@@ -44,6 +50,8 @@ final class AppModel: ObservableObject, UserPrompting {
     @Published var pendingDeletion: ConnectionProfile?
     /// Incremented to ask the focused terminal to clear.
     @Published var clearTerminalSignal = 0
+    @Published var copyNotice: CopyNotice?
+    private var copyNoticeDismissal: Task<Void, Never>?
 
     private let profileStore: any ProfileStoring
     let secrets: ProfileSecretsManager
@@ -179,6 +187,7 @@ final class AppModel: ObservableObject, UserPrompting {
             Task { await session.disconnect() }
             sessions.removeValue(forKey: profile.id)
         }
+        TerminalViewCache.remove(profileID: profile.id)
         profiles.removeAll { $0.id == profile.id }
         persistProfiles()
         do {
@@ -237,6 +246,21 @@ final class AppModel: ObservableObject, UserPrompting {
 
     func clearActiveTerminal() {
         clearTerminalSignal += 1
+    }
+
+    /// Shows the copy-on-select confirmation, replacing any visible one and
+    /// restarting the auto-dismiss timer.
+    func announceCopy(characterCount: Int) {
+        let notice = CopyNotice(characterCount: characterCount)
+        copyNotice = notice
+        copyNoticeDismissal?.cancel()
+        copyNoticeDismissal = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            if self?.copyNotice?.id == notice.id {
+                self?.copyNotice = nil
+            }
+        }
     }
 
     private func markUsed(profileID: UUID) {

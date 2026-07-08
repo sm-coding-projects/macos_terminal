@@ -31,6 +31,19 @@ private extension Double {
     }
 }
 
+/// Keeps one live terminal view per profile. Switching servers changes the
+/// detail view's identity, which tears down and rebuilds the SwiftUI
+/// representable — re-hosting the cached NSView here means the emulator
+/// (screen contents and scrollback) survives the switch.
+@MainActor
+enum TerminalViewCache {
+    fileprivate static var views: [UUID: PasteGuardTerminalView] = [:]
+
+    static func remove(profileID: UUID) {
+        views.removeValue(forKey: profileID)
+    }
+}
+
 /// SwiftUI wrapper around SwiftTerm's `TerminalView`, wired to a
 /// `TerminalViewModel`: keystrokes go to the SSH channel, SSH output is fed
 /// to the emulator, and size changes propagate as SSH window-change requests.
@@ -44,21 +57,33 @@ struct TerminalHostView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> PasteGuardTerminalView {
-        let font = NSFont.monospacedSystemFont(ofSize: CGFloat(TerminalFontSize.current), weight: .regular)
-        let view = PasteGuardTerminalView(frame: .zero, font: font)
+        let view: PasteGuardTerminalView
+        if let cached = TerminalViewCache.views[session.id] {
+            view = cached
+        } else {
+            let font = NSFont.monospacedSystemFont(ofSize: CGFloat(TerminalFontSize.current), weight: .regular)
+            view = PasteGuardTerminalView(frame: .zero, font: font)
+            view.nativeBackgroundColor = .black
+            view.nativeForegroundColor = NSColor(calibratedWhite: 0.92, alpha: 1)
+            TerminalViewCache.views[session.id] = view
+        }
         view.terminalDelegate = context.coordinator
         view.warnOnMultiLinePaste = pasteWarning
-        view.nativeBackgroundColor = .black
-        view.nativeForegroundColor = NSColor(calibratedWhite: 0.92, alpha: 1)
-
-        session.attachOutput { [weak view] data in
-            view?.feed(byteArray: ArraySlice([UInt8](data)))
+        let model = self.model
+        view.onSelectionCopied = { count in
+            model.announceCopy(characterCount: count)
         }
+        context.coordinator.attach(to: view, session: session)
         return view
     }
 
     func updateNSView(_ view: PasteGuardTerminalView, context: Context) {
         view.warnOnMultiLinePaste = pasteWarning
+        if context.coordinator.session !== session {
+            // A reconnect creates a fresh view model for the same profile;
+            // point its output at the retained view.
+            context.coordinator.attach(to: view, session: session)
+        }
         context.coordinator.clearIfSignaled(model.clearTerminalSignal, view: view)
         if session.state == .connected, view.window?.firstResponder !== view {
             view.window?.makeFirstResponder(view)
@@ -66,11 +91,19 @@ struct TerminalHostView: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, TerminalViewDelegate {
-        private let session: TerminalViewModel
+        private(set) var session: TerminalViewModel
         private var lastClearSignal = 0
 
         init(session: TerminalViewModel) {
             self.session = session
+        }
+
+        @MainActor
+        func attach(to view: PasteGuardTerminalView, session: TerminalViewModel) {
+            self.session = session
+            session.attachOutput { [weak view] data in
+                view?.feed(byteArray: ArraySlice([UInt8](data)))
+            }
         }
 
         @MainActor
@@ -93,7 +126,9 @@ struct TerminalHostView: NSViewRepresentable {
         }
 
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-            guard newCols > 0, newRows > 0 else { return }
+            // Never propagate a grid the remote shell can't render a prompt
+            // in; transient layout passes can report absurd sizes.
+            guard newCols >= 10, newRows >= 3 else { return }
             MainActor.assumeIsolated {
                 session.resize(cols: newCols, rows: newRows)
             }
@@ -126,15 +161,90 @@ struct TerminalHostView: NSViewRepresentable {
 /// a pasted newline executes commands immediately on the remote host.
 final class PasteGuardTerminalView: TerminalView {
     var warnOnMultiLinePaste = true
+    /// Called with the character count after a selection is auto-copied.
+    var onSelectionCopied: ((Int) -> Void)?
     private var defaultsObserver: NSObjectProtocol?
 
-    /// Observe the font-size preference directly so changes from any source
-    /// (menu, ⌘+/⌘-, Settings slider) apply to live terminals immediately.
-    /// SwiftUI's updateNSView is not a reliable channel here: it only runs
-    /// when a dependency it tracked during the last update changes.
+    /// Copy-on-select, via a local event monitor because SwiftTerm's
+    /// `mouseUp` is public-not-open and cannot be overridden. A plain click
+    /// clears the selection on mouse-down, so an active selection at
+    /// mouse-up always means the user just made one (drag, double-click
+    /// word, triple-click line, or shift-extend).
+    private var mouseUpMonitor: Any?
+
+    private func installCopyOnSelectMonitor() {
+        guard mouseUpMonitor == nil else { return }
+        mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            // Defer one turn so SwiftTerm finishes processing the mouse-up
+            // before the selection is read.
+            DispatchQueue.main.async { [weak self] in
+                self?.copySelectionIfMouseUpWasHere(event)
+            }
+            return event
+        }
+    }
+
+    private func removeCopyOnSelectMonitor() {
+        if let mouseUpMonitor {
+            NSEvent.removeMonitor(mouseUpMonitor)
+            self.mouseUpMonitor = nil
+        }
+    }
+
+    private func copySelectionIfMouseUpWasHere(_ event: NSEvent) {
+        guard let window, event.window === window,
+              bounds.contains(convert(event.locationInWindow, from: nil)),
+              let text = getSelection(), !text.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        onSelectionCopied?(text.count)
+    }
+
+    /// SwiftUI's hosting layout passes through degenerate sizes while the
+    /// view is detached/re-hosted during a server switch. SwiftTerm has no
+    /// lower bound on the grid: a transient 2-column layout reflows the
+    /// scrollback and tells the remote shell the window is 2 cells wide,
+    /// which makes bash redraw its prompt as "ro…"/"me…". Ignore any size
+    /// that cannot hold a usable grid; the final layout pass always
+    /// delivers the real size.
+    override func setFrameSize(_ newSize: NSSize) {
+        guard newSize.width >= 100, newSize.height >= 50 else { return }
+        super.setFrameSize(newSize)
+    }
+
+    /// Called whenever the (cached) view is hosted into the window — i.e.
+    /// every time the user switches to this server.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard defaultsObserver == nil, window != nil else { return }
+        guard window != nil else {
+            removeCopyOnSelectMonitor()
+            return
+        }
+        installCopyOnSelectMonitor()
+
+        // Repaint everything from the emulator's buffer. Dirty-row redraw
+        // requests issued while the view was detached (output arriving for
+        // a background server) are lost, which left the prompt partially
+        // drawn after a switch.
+        needsDisplay = true
+
+        // Focus the terminal immediately so the user can type right after
+        // selecting a server, without clicking into the terminal first.
+        // Deferred one runloop turn so it wins over the sidebar List, which
+        // takes focus from the click that triggered the switch.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            if window.firstResponder !== self {
+                window.makeFirstResponder(self)
+            }
+        }
+
+        // Observe the font-size preference directly so changes from any
+        // source (menu, ⌘+/⌘-, Settings slider) apply to live terminals
+        // immediately. SwiftUI's updateNSView is not a reliable channel
+        // here: it only runs when a tracked dependency changes.
+        guard defaultsObserver == nil else { return }
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: UserDefaults.standard,
@@ -148,6 +258,9 @@ final class PasteGuardTerminalView: TerminalView {
     deinit {
         if let defaultsObserver {
             NotificationCenter.default.removeObserver(defaultsObserver)
+        }
+        if let mouseUpMonitor {
+            NSEvent.removeMonitor(mouseUpMonitor)
         }
     }
 

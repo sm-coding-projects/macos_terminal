@@ -133,7 +133,7 @@ struct EmptyStateView: View {
         ContentUnavailableView {
             Label("No Server Selected", systemImage: "terminal")
         } description: {
-            Text("Add a connection profile, then double-click it (or press Return) to open an SSH session.")
+            Text("Add a connection profile, then double-click it (or press Return) to open an SSH session. Click any server to switch to it.")
         } actions: {
             Button("New Profile") { model.beginCreatingProfile() }
                 .buttonStyle(.borderedProminent)
