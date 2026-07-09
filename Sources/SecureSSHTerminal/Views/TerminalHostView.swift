@@ -295,6 +295,14 @@ final class PasteGuardTerminalView: TerminalView {
         return super.performKeyEquivalent(with: event)
     }
 
+    /// Right-click pastes the clipboard (complements copy-on-select, so a
+    /// select-then-paste round trip never leaves the mouse). SwiftTerm does
+    /// not use right-clicks, so nothing is lost by repurposing the button.
+    /// Routed through paste(_:) so the multi-line warning still applies.
+    override func rightMouseDown(with event: NSEvent) {
+        paste(self)
+    }
+
     override func paste(_ sender: Any) {
         guard warnOnMultiLinePaste,
               let text = NSPasteboard.general.string(forType: .string),
