@@ -44,7 +44,7 @@ terminal, and Keychain-only secret storage.
 ```sh
 make build      # debug build (swift build)
 make run        # build and launch the app
-make test       # run the unit test suite (56 tests)
+make test       # run the unit test suite (61 tests)
 make release    # optimized build
 make app        # wrap the release binary into build/SecureSSH Terminal.app
 make dmg        # universal (arm64+x86_64) tester DMG, ad-hoc signed
@@ -63,7 +63,7 @@ full Xcode, plain `swift test` works as well.
 ### Test results (last verified run)
 
 ```
-✔ Test run with 56 tests in 7 suites passed after 0.287 seconds.
+✔ Test run with 61 tests in 7 suites passed after 0.650 seconds.
 ```
 
 Suites: profile validation, profile store persistence, redaction, Keychain

@@ -22,18 +22,51 @@ STAGING="build/dmg-staging"
 APP_DIR="$STAGING/$APP_NAME.app"
 DMG="build/SecureSSH-Terminal-$VERSION.dmg"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+SLICE_DIR="build/slices"
+
+# Builds one slice and copies its binary out of the build directory.
+#
+# SwiftPM 6 no longer keeps a per-triple products directory — both slices
+# land in the same place — so the binary has to be grabbed right after its
+# slice is built. Older layouts are still supported.
+build_slice() {
+    triple="$1"
+    arch="$2"
+    dest="$SLICE_DIR/$arch"
+
+    swift build -c release --triple "$triple"
+
+    for candidate in \
+        ".build/$triple/release/SecureSSHTerminal" \
+        ".build/out/Products/Release/SecureSSHTerminal" \
+        ".build/release/SecureSSHTerminal"
+    do
+        if [ -x "$candidate" ]; then
+            mkdir -p "$SLICE_DIR"
+            cp "$candidate" "$dest"
+            if lipo -archs "$dest" | tr ' ' '\n' | grep -qx "$arch"; then
+                return 0
+            fi
+            echo "error: $candidate has no $arch slice" >&2
+            exit 1
+        fi
+    done
+
+    echo "error: could not find the release binary for $triple" >&2
+    exit 1
+}
 
 echo "==> Building arm64 slice"
-swift build -c release --triple arm64-apple-macosx
+build_slice arm64-apple-macosx arm64
 
 echo "==> Building x86_64 slice"
-swift build -c release --triple x86_64-apple-macosx
+build_slice x86_64-apple-macosx x86_64
 
 echo "==> Creating universal binary"
 mkdir -p build
 lipo -create \
-    .build/arm64-apple-macosx/release/SecureSSHTerminal \
-    .build/x86_64-apple-macosx/release/SecureSSHTerminal \
+    "$SLICE_DIR/arm64" \
+    "$SLICE_DIR/x86_64" \
     -output build/SecureSSHTerminal-universal
 lipo -archs build/SecureSSHTerminal-universal
 
@@ -82,7 +115,7 @@ EOF
 echo "==> Creating DMG"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
 hdiutil verify "$DMG" >/dev/null
-rm -rf "$STAGING" build/SecureSSHTerminal-universal
+rm -rf "$STAGING" build/SecureSSHTerminal-universal "$SLICE_DIR"
 
 echo ""
 echo "Created: $DMG"
