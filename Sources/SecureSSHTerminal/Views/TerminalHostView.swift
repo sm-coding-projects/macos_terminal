@@ -42,6 +42,14 @@ enum TerminalViewCache {
     static func remove(profileID: UUID) {
         views.removeValue(forKey: profileID)
     }
+
+    /// Current grid size of a cached terminal, if that profile already has a
+    /// laid-out view. Used to seed a new session with the real geometry
+    /// instead of a stale default.
+    static func terminalSize(for profileID: UUID) -> (cols: Int, rows: Int)? {
+        guard let view = views[profileID] else { return nil }
+        return view.currentTerminalSize
+    }
 }
 
 /// SwiftUI wrapper around SwiftTerm's `TerminalView`, wired to a
@@ -84,6 +92,10 @@ struct TerminalHostView: NSViewRepresentable {
             // point its output at the retained view.
             context.coordinator.attach(to: view, session: session)
         }
+        // Keep the remote's idea of the window in sync with the grid. The
+        // grid rarely changes once laid out, so the size is pushed on every
+        // update rather than only when SwiftTerm reports a change.
+        context.coordinator.pushTerminalSize(of: view)
         context.coordinator.clearIfSignaled(model.clearTerminalSignal, view: view)
         if session.state == .connected, view.window?.firstResponder !== view {
             view.window?.makeFirstResponder(view)
@@ -104,6 +116,18 @@ struct TerminalHostView: NSViewRepresentable {
             session.attachOutput { [weak view] data in
                 view?.feed(byteArray: ArraySlice([UInt8](data)))
             }
+            // A session that connects to an already laid-out view never sees
+            // a size *change*, so hand it the current geometry explicitly —
+            // otherwise the remote keeps the stale default size and lays
+            // full-screen programs out for the wrong window.
+            pushTerminalSize(of: view)
+        }
+
+        /// Sends the emulator's current grid size to the session.
+        @MainActor
+        func pushTerminalSize(of view: PasteGuardTerminalView) {
+            guard let size = view.currentTerminalSize else { return }
+            session.resize(cols: size.cols, rows: size.rows)
         }
 
         @MainActor
@@ -126,9 +150,12 @@ struct TerminalHostView: NSViewRepresentable {
         }
 
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-            // Never propagate a grid the remote shell can't render a prompt
-            // in; transient layout passes can report absurd sizes.
-            guard newCols >= 10, newRows >= 3 else { return }
+            // SwiftTerm only reports sizes the grid actually changed to, so
+            // the remote must be told about them — otherwise the two
+            // disagree and full-screen programs (apt's progress bar, `vim`)
+            // draw for a window that does not exist. Degenerate sizes are
+            // ignored; the view's own layout guard keeps them out.
+            guard newCols > 0, newRows > 0 else { return }
             MainActor.assumeIsolated {
                 session.resize(cols: newCols, rows: newRows)
             }
@@ -164,6 +191,15 @@ final class PasteGuardTerminalView: TerminalView {
     /// Called with the character count after a selection is auto-copied.
     var onSelectionCopied: ((Int) -> Void)?
     private var defaultsObserver: NSObjectProtocol?
+
+    /// Current grid size, or `nil` while the view has not been laid out yet
+    /// (its grid still holds the emulator's default size).
+    var currentTerminalSize: (cols: Int, rows: Int)? {
+        guard frame.width > 0, frame.height > 0 else { return nil }
+        let terminal = getTerminal()
+        guard terminal.cols > 0, terminal.rows > 0 else { return nil }
+        return (terminal.cols, terminal.rows)
+    }
 
     /// Copy-on-select, via a local event monitor because SwiftTerm's
     /// `mouseUp` is public-not-open and cannot be overridden. A plain click

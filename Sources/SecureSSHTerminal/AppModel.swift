@@ -219,7 +219,12 @@ final class AppModel: ObservableObject, UserPrompting {
             sshService: sshService,
             knownHosts: knownHosts,
             secrets: secrets,
-            prompts: self
+            prompts: self,
+            // The remote must start out with the size of the terminal grid
+            // it is driving. A cached view already knows its geometry; for
+            // a first connection the view reports it as soon as it is laid
+            // out, which resizes the session before the shell draws.
+            initialTerminalSize: TerminalViewCache.terminalSize(for: profileID) ?? (80, 24)
         )
         session.onConnected = { [weak self] in
             self?.markUsed(profileID: profileID)

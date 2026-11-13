@@ -70,23 +70,42 @@ public final class TerminalViewModel: ObservableObject, Identifiable {
     /// the view attaches is buffered and replayed.
     private var outputSink: ((Data) -> Void)?
     private var pendingOutput = Data()
-    private var lastTerminalSize: (cols: Int, rows: Int) = (80, 24)
+    /// Geometry of the emulator grid — the source of truth for how big the
+    /// terminal really is.
+    private var lastTerminalSize: (cols: Int, rows: Int)
+    /// Geometry most recently announced to the remote (PTY request or
+    /// window-change). Diverges from `lastTerminalSize` while a connection
+    /// is being established, because the grid can change mid-handshake.
+    private var lastRequestedSize: (cols: Int, rows: Int)
 
     /// Invoked once per successful connection (used to bump lastUsedAt).
     public var onConnected: (() -> Void)?
 
+    /// - Parameter initialTerminalSize: size of the emulator grid at connect
+    ///   time. It is sent as the PTY size and keeps the remote's idea of the
+    ///   window in sync with the emulator, so full-screen programs (apt's
+    ///   progress bar, `vim`, …) lay themselves out against the real grid
+    ///   instead of a stale default.
     public init(
         profile: ConnectionProfile,
         sshService: any SSHSessionServicing,
         knownHosts: any KnownHostsServicing,
         secrets: ProfileSecretsManager,
-        prompts: any UserPrompting
+        prompts: any UserPrompting,
+        initialTerminalSize: (cols: Int, rows: Int) = (80, 24)
     ) {
+        let size = TerminalViewModel.sanitized(initialTerminalSize)
         self.profile = profile
         self.sshService = sshService
         self.knownHosts = knownHosts
         self.secrets = secrets
         self.prompts = prompts
+        self.lastTerminalSize = size
+        self.lastRequestedSize = size
+    }
+
+    private static func sanitized(_ size: (cols: Int, rows: Int)) -> (cols: Int, rows: Int) {
+        (max(1, size.cols), max(1, size.rows))
     }
 
     // MARK: Output plumbing
@@ -120,11 +139,13 @@ public final class TerminalViewModel: ObservableObject, Identifiable {
             return
         }
 
+        let requestedSize = Self.sanitized(lastTerminalSize)
+        lastRequestedSize = requestedSize
         let config = SSHConnectionConfig(
             host: profile.host.trimmingCharacters(in: .whitespacesAndNewlines),
             port: profile.port,
             username: profile.username,
-            initialTerminalSize: lastTerminalSize
+            initialTerminalSize: requestedSize
         )
 
         let callbacks = SSHSessionCallbacks(
@@ -146,6 +167,10 @@ public final class TerminalViewModel: ObservableObject, Identifiable {
 
         do {
             handle = try await sshService.connect(config: config, credential: credential, callbacks: callbacks)
+            // The grid can change while the handshake is in flight (the
+            // terminal view is laid out during connect). Catch the remote
+            // up with the current size before the shell starts drawing.
+            syncRemoteSize()
             // .connected arrives via onStateChange when the shell is ready.
             onConnected?()
         } catch {
@@ -194,9 +219,22 @@ public final class TerminalViewModel: ObservableObject, Identifiable {
         send(Data([0x04])) // Ctrl+D
     }
 
+    /// Records the emulator's current geometry and keeps the remote in sync.
     public func resize(cols: Int, rows: Int) {
+        guard cols > 0, rows > 0 else { return }
         lastTerminalSize = (cols, rows)
-        handle?.resize(cols: cols, rows: rows)
+        syncRemoteSize()
+    }
+
+    /// Tells the remote the current grid size, but only when it actually
+    /// differs from what the remote was last told — a window-change per
+    /// SwiftUI update would be needless traffic.
+    private func syncRemoteSize() {
+        guard let handle else { return }
+        let size = Self.sanitized(lastTerminalSize)
+        guard size != lastRequestedSize else { return }
+        handle.resize(cols: size.cols, rows: size.rows)
+        lastRequestedSize = size
     }
 
     // MARK: Credential resolution

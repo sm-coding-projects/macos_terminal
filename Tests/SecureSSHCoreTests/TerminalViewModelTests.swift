@@ -29,6 +29,9 @@ final class MockSSHSessionService: SSHSessionServicing, @unchecked Sendable {
 
     var behavior: Behavior = .success(initialOutput: nil)
     var presentedHostKey = HostKeyCandidate(openSSHString: "ssh-ed25519 AAAAB3NzaMockKeyBlob")
+    /// Awaited just before the handle is handed back — lets a test change
+    /// the terminal size while the handshake is still in flight.
+    var beforeReturningHandle: (() async -> Void)?
     private(set) var lastConfig: SSHConnectionConfig?
     private(set) var lastCredential: ResolvedCredential?
     private(set) var lastHandle: MockSSHHandle?
@@ -57,6 +60,9 @@ final class MockSSHSessionService: SSHSessionServicing, @unchecked Sendable {
             callbacks.onStateChange(.connected)
             if let initialOutput {
                 callbacks.onOutput(initialOutput)
+            }
+            if let beforeReturningHandle {
+                await beforeReturningHandle()
             }
             return handle
         }
@@ -115,7 +121,8 @@ private func makeVM(
     service: MockSSHSessionService = MockSSHSessionService(),
     prompts: MockPrompts = MockPrompts(),
     knownHosts: MockKnownHosts = MockKnownHosts(),
-    keychain: InMemoryKeychainService = InMemoryKeychainService()
+    keychain: InMemoryKeychainService = InMemoryKeychainService(),
+    initialTerminalSize: (cols: Int, rows: Int) = (80, 24)
 ) -> (TerminalViewModel, MockSSHSessionService, MockPrompts, MockKnownHosts, InMemoryKeychainService) {
     let profile = profile ?? ConnectionProfile(
         displayName: "Test",
@@ -127,7 +134,8 @@ private func makeVM(
         sshService: service,
         knownHosts: knownHosts,
         secrets: ProfileSecretsManager(keychain: keychain),
-        prompts: prompts
+        prompts: prompts,
+        initialTerminalSize: initialTerminalSize
     )
     return (vm, service, prompts, knownHosts, keychain)
 }
@@ -349,5 +357,85 @@ struct TerminalViewModelTests {
         }
         #expect(message.contains("could not be read"))
         #expect(service.connectCallCount == 0)
+    }
+
+    // MARK: Terminal size
+
+    @Test func initialTerminalSizeIsUsedForThePTYRequest() async {
+        let prompts = MockPrompts()
+        prompts.passwordAnswer = (password: UUID().uuidString, save: false)
+        let (vm, service, _, _, _) = makeVM(prompts: prompts, initialTerminalSize: (cols: 180, rows: 45))
+
+        await vm.connect()
+        await waitFor { vm.state == .connected }
+
+        // The remote must start out with the size of the grid it drives;
+        // a stale default makes full-screen programs (apt's progress bar)
+        // draw for a window that does not exist.
+        #expect(service.lastConfig?.initialTerminalSize.cols == 180)
+        #expect(service.lastConfig?.initialTerminalSize.rows == 45)
+    }
+
+    @Test func resizeBeforeConnectIsUsedForThePTYRequest() async {
+        let prompts = MockPrompts()
+        prompts.passwordAnswer = (password: UUID().uuidString, save: false)
+        let (vm, service, _, _, _) = makeVM(prompts: prompts)
+
+        // The terminal view reports its grid before the shell is up.
+        vm.resize(cols: 200, rows: 60)
+
+        await vm.connect()
+        await waitFor { vm.state == .connected }
+
+        #expect(service.lastConfig?.initialTerminalSize.cols == 200)
+        #expect(service.lastConfig?.initialTerminalSize.rows == 60)
+    }
+
+    @Test func sizeChangeDuringHandshakeIsForwardedToTheRemote() async {
+        let prompts = MockPrompts()
+        prompts.passwordAnswer = (password: UUID().uuidString, save: false)
+        let (vm, service, _, _, _) = makeVM(prompts: prompts)
+
+        // The grid is resized while the handshake is still in flight, so the
+        // PTY request already carried the old size.
+        service.beforeReturningHandle = {
+            await MainActor.run { vm.resize(cols: 210, rows: 61) }
+        }
+
+        await vm.connect()
+        await waitFor { vm.state == .connected }
+
+        #expect(service.lastConfig?.initialTerminalSize.cols == 80, "PTY request used the pre-resize size")
+        #expect(
+            service.lastHandle?.resizes.contains { $0.cols == 210 && $0.rows == 61 } == true,
+            "the remote must be caught up with the current grid size"
+        )
+    }
+
+    @Test func identicalSizeIsNotResentToTheRemote() async {
+        let prompts = MockPrompts()
+        prompts.passwordAnswer = (password: UUID().uuidString, save: false)
+        let (vm, service, _, _, _) = makeVM(prompts: prompts)
+
+        await vm.connect()
+        await waitFor { vm.state == .connected }
+
+        vm.resize(cols: 120, rows: 40)
+        vm.resize(cols: 120, rows: 40)
+
+        #expect(service.lastHandle?.resizes.count == 1, "an unchanged size must not spam window-changes")
+    }
+
+    @Test func degenerateSizesAreIgnored() async {
+        let prompts = MockPrompts()
+        prompts.passwordAnswer = (password: UUID().uuidString, save: false)
+        let (vm, service, _, _, _) = makeVM(prompts: prompts)
+
+        await vm.connect()
+        await waitFor { vm.state == .connected }
+
+        vm.resize(cols: 0, rows: 0)
+
+        #expect(service.lastHandle?.resizes.isEmpty == true)
     }
 }
